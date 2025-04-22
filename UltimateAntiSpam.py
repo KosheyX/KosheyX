@@ -188,6 +188,7 @@ class UltimateAntiSpam(loader.Module):
         
         if self.config["report_to_chat"] and self._log_chat:
             try:
+                # Исправленная строка 205 с закрывающими скобками
                 await self.client.send_message(
                     self._log_chat,
                     self.strings["log_msg"].format(
@@ -195,7 +196,8 @@ class UltimateAntiSpam(loader.Module):
                         time=datetime.now().strftime("%d.%m.%Y %H:%M"),
                         reason=reason,
                         msg=utils.escape_html(text[:500])
-                )
+                    )  # Закрывающая скобка для format
+                )  # Закрывающая скобка для send_message
             except Exception as e:
                 logger.error("Ошибка отправки отчета: %s", e)
         
