@@ -147,7 +147,7 @@ class UltimateAntiSpamMod(loader.Module):
                 await message.delete()
 
             # Отчет в канал
-            if self.config["log_to_channel"] and self.config["log_chat_id"]:
+            if self.config["https://t.me/+IuzxM1GfO1k2MmNi"] and self.config["https://t.me/+ve_fxQ6dYj9hOTJi"]:
                 report = self.strings("report_msg").format(
                     user=utils.escape_html(user.first_name),
                     user_id=user.id,
