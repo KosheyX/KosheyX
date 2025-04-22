@@ -9,10 +9,10 @@ logger = logging.getLogger(__name__)
 
 @loader.tds
 class UltimateAntiSpam(loader.Module):
-    """Антиспам без ошибок с полной обработкой всех случаев"""
+    """Мощный антиспам с интеллектуальными фильтрами"""
 
     strings = {
-        "name": "UltimateAntiSpam",
+        "name": "UltimateAntiSpamPro",
         "banned": "🔒 <b>Пользователь заблокирован</b>\nПричина: {reason}",
         "log_msg": (
             "📛 <b>Лог блокировки</b>\n\n"
@@ -23,7 +23,8 @@ class UltimateAntiSpam(loader.Module):
         ),
         "already_banned": "ℹ️ Пользователь уже заблокирован",
         "history_cleared": "🧹 История переписки очищена",
-        "user_not_found": "⚠️ Пользователь не найден"
+        "user_not_found": "⚠️ Пользователь не найден",
+        "spam_detected": "🚫 Обнаружен спам! Приняты меры."
     }
 
     def __init__(self):
@@ -31,9 +32,45 @@ class UltimateAntiSpam(loader.Module):
             "ban_users", True, "Блокировать пользователей",
             "delete_messages", True, "Удалять сообщения",
             "delete_history", True, "Удалять историю",
-            "report_to_chat", True, "Отправлять отчёты"
+            "report_to_chat", True, "Отправлять отчёты",
+            "max_links", 2, "Максимум ссылок в сообщении",
+            "check_adult", True, "Фильтровать NSFW контент",
+            "check_malware", True, "Проверять вредоносное ПО"
         )
         self._ban_count = 0
+        self._patterns = self._build_patterns()
+
+    def _build_patterns(self):
+        """Генерация умных регулярных выражений"""
+        return {
+            "Порнография": (
+                r"(?i)\b(порно|porn|xxx|секс|🔞|onlyfans|nsfw|эротик[аи]?|"
+                r"порнограф|интим|обнаж[её]нн?|гол[ыі]й|раздевайся|"
+                r"соси|порнуха|порнушк|порняшк)\b"
+                r"(?<!секс-|психо|история|методика|лекции|терапи|анализ)"
+            ),
+            "Реклама": (
+                r"(?i)(\b(подпишись|канал|реклама|casino|казин[оа]|куплю|"
+                r"продам|скидк[аи]|акци[яи]|промокод|раскрутк[аи]|"
+                r"накрутк[аи]|заработок|биржа|инвестиции|крипта|"
+                r"ставк[аи]|лотерея)\b"
+                r"|[\U0001F4B0-\U0001F4B8💵💰📈💸🤑]"
+                r"|(?:\bбесплатно\b.*\bвыгодно\b)"
+                r"|(?:\bсрочно\b.*\bкуп[иь]\b))"
+            ),
+            "Вредоносное": (
+                r"(?i)(?:bit\.ly|tinyurl|goo\.gl|скача[йи]|"
+                r"\.exe|\bвирус\b|вредонос|взлом|кряк|фишинг|"
+                r"malware|спам|ботнет|шифровальщик|руткит)"
+                r"|(?:https?://[^\s]*?(casino|рулетк|скачать|virus))"
+            ),
+            "Подозрительные паттерны": (
+                r"(?:https?://[^\s]*?){3,}|"
+                r"([!?#$%^&]{4,})|"
+                r"(\b\w+\b\s*?){3,}\1|"
+                r"\b[a-z0-9]{20,}\b"
+            )
+        }
 
     async def client_ready(self, client, db):
         self.client = client
@@ -46,101 +83,103 @@ class UltimateAntiSpam(loader.Module):
             self._log_chat = None
 
     async def is_user_blocked(self, user_id: int) -> bool:
-        """Проверка блокировки без ошибок"""
+        """Улучшенная проверка блокировки"""
         try:
-            blocked = await self.client(functions.contacts.GetBlockedRequest(
-                offset=0,
-                limit=100
-            ))
-            # Обработка разных версий Telegram API
-            if hasattr(blocked, 'blocked'):
-                for user in blocked.blocked:
-                    if hasattr(user, 'peer') and hasattr(user.peer, 'user_id'):
-                        if user.peer.user_id == user_id:
-                            return True
-                    elif hasattr(user, 'id'):
-                        if user.id == user_id:
-                            return True
-            return False
+            blocked = await self.client(functions.contacts.GetBlockedRequest(offset=0, limit=100))
+            return any(
+                user.peer.user_id == user_id if hasattr(user, 'peer') 
+                else user.id == user_id 
+                for user in getattr(blocked, 'blocked', [])
+            )
         except Exception as e:
             logger.error("Ошибка проверки блокировки: %s", e)
             return False
 
     async def block_user_ultimate(self, user_id: int):
-        """Абсолютно надежная блокировка"""
+        """Усовершенствованная блокировка с повторами"""
         try:
             if await self.is_user_blocked(user_id):
                 return "already_banned"
             
-            # Получаем полную информацию о пользователе
-            try:
-                user = await self.client.get_entity(types.PeerUser(user_id))
-                await self.client(functions.contacts.BlockRequest(
-                    id=types.InputPeerUser(
-                        user_id=user.id,
-                        access_hash=user.access_hash
-                    )
-                ))
-            except:
-                # Если не удалось получить access_hash, пробуем без него
-                await self.client(functions.contacts.BlockRequest(
-                    id=types.InputPeerUser(user_id=user_id, access_hash=0)
-                ))
+            for _ in range(3):  # Повторы на случай ошибок сети
+                try:
+                    user = await self.client.get_entity(types.PeerUser(user_id))
+                    await self.client(functions.contacts.BlockRequest(
+                        id=types.InputPeerUser(
+                            user_id=user.id,
+                            access_hash=user.access_hash
+                        )
+                    ))
+                    return "success"
+                except (ValueError, TypeError):
+                    await self.client(functions.contacts.BlockRequest(
+                        id=types.InputPeerUser(user_id=user_id, access_hash=0)
+                    ))
+                    return "success"
+                except Exception as e:
+                    logger.warning("Попытка блокировки %d: %s", user_id, e)
+                    await asyncio.sleep(1)
             
-            return "success"
+            return "error"
         except Exception as e:
-            logger.error("Ошибка блокировки: %s", e)
+            logger.error("Фатальная ошибка блокировки: %s", e)
             return "error"
 
     async def delete_history_ultimate(self, user_id: int):
-        """Удаление истории с обработкой всех ошибок"""
+        """Интеллектуальное удаление истории"""
         try:
-            # Получаем полную информацию о пользователе
-            try:
-                user = await self.client.get_entity(types.PeerUser(user_id))
-                await self.client(functions.messages.DeleteHistoryRequest(
-                    peer=types.InputPeerUser(
-                        user_id=user.id,
-                        access_hash=user.access_hash
-                    ),
-                    max_id=0,
-                    revoke=True
-                ))
-            except:
-                # Если не удалось получить access_hash, пробуем без него
-                await self.client(functions.messages.DeleteHistoryRequest(
-                    peer=types.InputPeerUser(user_id=user_id, access_hash=0),
-                    max_id=0,
-                    revoke=True
-                ))
-            
+            user = await self.client.get_entity(types.PeerUser(user_id))
+            await self.client(functions.messages.DeleteHistoryRequest(
+                peer=types.InputPeerUser(
+                    user_id=user.id,
+                    access_hash=user.access_hash
+                ),
+                max_id=0,
+                revoke=True
+            ))
             return True
         except Exception as e:
             logger.error("Ошибка удаления истории: %s", e)
             return False
 
+    async def _check_message(self, text: str) -> str:
+        """Продвинутый анализ сообщения"""
+        # Проверка количества ссылок
+        if len(re.findall(r"https?://", text)) > self.config["max_links"]:
+            return "Подозрительные паттерны"
+        
+        # Комплексная проверка по паттернам
+        for category, pattern in self._patterns.items():
+            if not self.config[f"check_{category.split()[0].lower()}"]:
+                continue
+            if re.search(pattern, text, flags=re.IGNORECASE):
+                return category
+        
+        # Дополнительная проверка для NSFW
+        if self.config["check_adult"] and any(
+            kw in text.lower() for kw in {"🔞", "nsfw", "18+", "порно"}
+        ):
+            return "Порнография"
+        
+        return ""
+
     async def process_message(self, message: Message):
-        """Обработка сообщения с защитой от всех ошибок"""
+        """Улучшенная обработка сообщений"""
         if not message.is_private or message.out:
             return
 
-        user_id = message.sender_id
-        text = (message.text or "").lower()
-        
-        # Определяем триггеры
-        triggers = {
-            "Порнография": r"порно|porn|xxx|onlyfans|секс|🔞",
-            "Реклама": r"подпишись|канал|купить|реклама",
-            "Вредоносное": r"bit\.ly|скачать|\.exe|вирус"
-        }
-        
-        reason = next((r for r, p in triggers.items() if re.search(p, text, re.I)), None)
+        text = utils.get_raw_text(message)
+        if not text:
+            return
+
+        reason = await self._check_message(text)
         if not reason:
             return
 
+        user_id = message.sender_id
         response = []
         
-        # 1. Блокировка
+        # Блокировка пользователя
         if self.config["ban_users"]:
             status = await self.block_user_ultimate(user_id)
             if status == "already_banned":
@@ -148,19 +187,19 @@ class UltimateAntiSpam(loader.Module):
             elif status == "error":
                 response.append(self.strings["user_not_found"])
         
-        # 2. Удаление сообщения
+        # Удаление сообщений
         if self.config["delete_messages"]:
             try:
                 await message.delete()
-            except:
-                pass
+            except Exception as e:
+                logger.warning("Ошибка удаления: %s", e)
         
-        # 3. Удаление истории
+        # Очистка истории
         if self.config["delete_history"]:
             if await self.delete_history_ultimate(user_id):
                 response.append(self.strings["history_cleared"])
         
-        # 4. Отчёт
+        # Отчет в лог-чат
         if self.config["report_to_chat"] and self._log_chat:
             try:
                 await self.client.send_message(
@@ -169,27 +208,35 @@ class UltimateAntiSpam(loader.Module):
                         user_id=user_id,
                         time=datetime.now().strftime("%d.%m.%Y %H:%M"),
                         reason=reason,
-                        msg=utils.escape_html(text[:200])
+                        msg=utils.escape_html(text[:500])
                     )
-                )
-            except:
-                pass
+            except Exception as e:
+                logger.error("Ошибка отправки отчета: %s", e)
         
-        # 5. Ответ
-        response.append(self.strings["banned"].format(reason=reason))
-        await utils.answer(message, "\n".join(filter(None, response)))
+        # Ответ пользователю
+        final_response = "\n".join(filter(None, [
+            self.strings["spam_detected"],
+            *response,
+            self.strings["banned"].format(reason=reason)
+        ]))
+        
+        await utils.answer(message, final_response)
         self._ban_count += 1
 
     async def watcher(self, message: Message):
         await self.process_message(message)
 
     async def uastatcmd(self, message: Message):
-        """Статистика работы"""
+        """Расширенная статистика"""
         stats = (
-            "📊 <b>UltimateAntiSpam Stats</b>\n\n"
-            f"• Всего заблокировано: {self._ban_count}\n"
-            f"• Автоблокировка: {'✅ ON' if self.config['ban_users'] else '❌ OFF'}\n"
-            f"• Удаление истории: {'✅ ON' if self.config['delete_history'] else '❌ OFF'}\n"
-            f"• Отчёты: {'✅ ON' if self.config['report_to_chat'] else '❌ OFF'}"
+            "📊 <b>UltimateAntiSpam Pro Stats</b>\n\n"
+            f"• Всего блокировок: {self._ban_count}\n"
+            f"• Активные фильтры:\n"
+            f"  - NSFW: {'✅' if self.config['check_adult'] else '❌'}\n"
+            f"  - Вредоносное: {'✅' if self.config['check_malware'] else '❌'}\n"
+            f"  - Макс. ссылок: {self.config['max_links']}\n"
+            f"• Последние действия:\n"
+            f"  - Блокировка: {'✅' if self.config['ban_users'] else '❌'}\n"
+            f"  - Очистка истории: {'✅' if self.config['delete_history'] else '❌'}"
         )
         await utils.answer(message, stats)
