@@ -1,37 +1,37 @@
 import re
 import logging
 from datetime import datetime
-from hikkatl.types import Message
-from hikkatl import functions
+from hikkatl.types import Message, PeerUser
+from hikkatl import functions, types
 from .. import loader, utils
 
 logger = logging.getLogger(__name__)
 
 @loader.tds
-class AntiSpamFinal(loader.Module):
-    """Антиспам для ЛС с логами в чат"""
+class AntiSpamNuclear(loader.Module):
+    """Антиспам с полной зачисткой переписки"""
 
     strings = {
-        "name": "AntiSpamFinal",
-        "banned": "🚨 <b>Вы заблокированы!</b>\nПричина: {reason}",
+        "name": "AntiSpamNuclear",
+        "banned": "🚨 <b>Вы заблокированы!</b>\nПричина: {reason}\nПереписка удалена!",
         "log_msg": (
-            "🛡 <b>Лог блокировки</b>\n\n"
+            "💥 <b>Полная зачистка</b>\n\n"
             "👤 Пользователь: {user}\n"
             "🆔 ID: <code>{user_id}</code>\n"
             "⏰ Время: {time}\n"
             "🔞 Причина: {reason}\n"
-            "📝 Сообщение: <code>{msg}</code>"
+            "🗑 Удалено сообщений: ~{msg_count}"
         ),
         "chat_error": "❌ Не удалось отправить лог",
-        "setup_error": "⚠️ Чат для логов не настроен"
+        "user_error": "⚠️ Не удалось получить данные пользователя"
     }
 
     def __init__(self):
         self.config = loader.ModuleConfig(
             "ban_users", True, "Автоматически банить",
-            "delete_messages", True, "Удалять сообщения",
+            "delete_history", True, "Удалять историю переписки",
+            "report_to_chat", True, "Отправлять отчет в чат"
         )
-        self._log_chat = None
         self._ban_count = 0
 
     async def client_ready(self, client, db):
@@ -43,6 +43,31 @@ class AntiSpamFinal(loader.Module):
         except Exception as e:
             logger.error("Ошибка подключения чата: %s", e)
             self._log_chat = None
+
+    async def nuclear_cleanup(self, user_id: int):
+        """Полная зачистка переписки"""
+        try:
+            await self.client(functions.messages.DeleteHistoryRequest(
+                peer=PeerUser(user_id),
+                max_id=0,
+                revoke=True
+            ))
+            return True
+        except Exception as e:
+            logger.error("Ошибка удаления истории: %s", e)
+            return False
+
+    async def get_user_info(self, message: Message):
+        """Безопасное получение информации о пользователе"""
+        try:
+            return await message.get_sender()
+        except:
+            return types.User(
+                id=message.sender_id,
+                first_name="Unknown",
+                last_name="",
+                deleted=True
+            )
 
     async def detect_triggers(self, message: Message) -> str:
         text = (message.text or "").lower()
@@ -57,38 +82,41 @@ class AntiSpamFinal(loader.Module):
         return None
 
     async def process_ban(self, message: Message, reason: str):
-        user = await message.get_sender()
+        user = await self.get_user_info(message)
+        msg_count = "много"  # Примерное количество, т.к. точное узнать сложно
         
         try:
+            # 1. Блокировка
             if self.config["ban_users"]:
                 await self.client(functions.contacts.BlockRequest(id=user.id))
             
-            if self.config["delete_messages"]:
-                await message.delete()
+            # 2. Удаление всей истории
+            if self.config["delete_history"]:
+                if await self.nuclear_cleanup(user.id):
+                    msg_count = "все"
             
-            if self._log_chat:
-                msg_text = utils.escape_html((message.text or "")[:200])
+            # 3. Отправка отчета
+            if self.config["report_to_chat"] and hasattr(self, '_log_chat') and self._log_chat:
                 try:
                     await self.client.send_message(
                         self._log_chat,
                         self.strings("log_msg").format(
-                            user=utils.escape_html(user.first_name),
+                            user=utils.escape_html(getattr(user, 'first_name', 'Unknown')),
                             user_id=user.id,
                             time=datetime.now().strftime("%d.%m.%Y %H:%M"),
                             reason=reason,
-                            msg=msg_text
+                            msg_count=msg_count
                         )
                     )
                 except Exception as e:
                     logger.error("Ошибка отправки лога: %s", e)
-                    await utils.answer(message, self.strings("chat_error"))
-            else:
-                await utils.answer(message, self.strings("setup_error"))
-
+            
+            # 4. Уведомление пользователю
             await utils.answer(message, self.strings("banned").format(reason=reason))
             self._ban_count += 1
+            
         except Exception as e:
-            logger.error("Ошибка при бане: %s", e)
+            logger.error("Критическая ошибка: %s", e)
 
     async def watcher(self, message: Message):
         if not message.is_private or message.out:
@@ -97,13 +125,13 @@ class AntiSpamFinal(loader.Module):
         if reason := await self.detect_triggers(message):
             await self.process_ban(message, reason)
 
-    async def asstatcmd(self, message: Message):
+    async def nstatcmd(self, message: Message):
         """Показать статус модуля"""
         status = (
-            "🔧 <b>AntiSpamFinal Status</b>\n\n"
-            f"• Чат логов: {'✅ ' + self._log_chat.title if self._log_chat else '❌ Нет'}\n"
+            "☢️ <b>AntiSpamNuclear Status</b>\n\n"
+            f"• Чат логов: {'✅ ' + self._log_chat.title if hasattr(self, '_log_chat') and self._log_chat else '❌ Нет'}\n"
             f"• Забанено: {self._ban_count}\n"
             f"• Автобан: {'✅ Вкл' if self.config['ban_users'] else '❌ Выкл'}\n"
-            f"• Удаление: {'✅ Вкл' if self.config['delete_messages'] else '❌ Выкл'}"
+            f"• Зачистка: {'✅ Вкл' if self.config['delete_history'] else '❌ Выкл'}"
         )
         await utils.answer(message, status)
