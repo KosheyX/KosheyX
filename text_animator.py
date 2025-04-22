@@ -1,151 +1,83 @@
 from .. import loader, utils
 import asyncio
-from random import choice, randint
+from random import choice
 
 @loader.tds
 class TextAnimatorMod(loader.Module):
-    """Аниматор текста с крутыми эффектами"""
+    """Анимация текста без удаления сообщений"""
     strings = {
         "name": "TextAnimator",
-        "effects": (
-            "🌀 <b>Доступные эффекты:</b>\n\n"
-            "<code>wave</code> - Волна\n"
-            "<code>rainbow</code> - Радуга\n"
-            "<code>typing</code> - Эффект печати\n"
-            "<code>matrix</code> - Матрица\n"
-            "<code>shake</code> - Дрожание\n"
-            "<code>rotate</code> - Вращение\n"
-            "<code>expand</code> - Расширение\n"
-            "<code>invert</code> - Инверсия\n"
-            "<code>random</code> - Случайный\n"
-            "<code>emoji</code> - Эмодзи-спам\n\n"
-            "✨ <b>Пример:</b> <code>.anim wave Привет</code>"
-        ),
-        "processing": "<i>Анимирую текст...</i>"
+        "help": (
+            "🎭 <b>Аниматор текста</b>\n\n"
+            "<code>.anim волна Привет</code> - эффект волны\n"
+            "<code>.anim радуга Текст</code> - разноцветный текст\n"
+            "<code>.anim печать Сообщение</code> - эффект печати\n\n"
+            "✨ <b>Эффекты:</b> волна, радуга, печать, матрица, дрожь"
+        )
     }
 
     async def animcmd(self, message):
         """Анимация текста - .anim <эффект> <текст>"""
         args = utils.get_args_raw(message)
-        if not args or " " not in args:
-            await utils.answer(message, self.strings["effects"])
+        if not args:
+            await utils.answer(message, self.strings["help"])
             return
 
-        effect, text = args.split(" ", 1)
+        if " " not in args:
+            effect = "радуга"
+            text = args
+        else:
+            effect, text = args.split(" ", 1)
+
         effect = effect.lower()
-
-        await utils.answer(message, self.strings["processing"])
-        result = await self.animate_text(text, effect)
+        animated = await self.animate(text, effect)
         
-        # Удаляем сообщение "Анимирую текст..." перед отправкой результата
-        await message.delete()
-        await utils.answer(message, result)
+        # Отправляем новое сообщение (без удаления исходного)
+        await message.reply(animated)
 
-    async def animate_text(self, text: str, effect: str) -> str:
-        """Генерирует анимированный текст"""
+    async def animate(self, text: str, effect: str) -> str:
+        """Генерация анимированного текста"""
         effects = {
-            "wave": self.wave_effect,
-            "rainbow": self.rainbow_effect,
-            "typing": self.typing_effect,
-            "matrix": self.matrix_effect,
-            "shake": self.shake_effect,
-            "rotate": self.rotate_effect,
-            "expand": self.expand_effect,
-            "invert": self.invert_effect,
-            "random": self.random_effect,
-            "emoji": self.emoji_effect
+            "волна": self._wave,
+            "радуга": self._rainbow,
+            "печать": self._typing,
+            "матрица": self._matrix,
+            "дрожь": self._shake
         }
 
         if effect not in effects:
-            return "❌ Неизвестный эффект. Используйте <code>.anim</code> для списка"
+            return "❌ Неизвестный эффект. Доступно: " + ", ".join(effects.keys())
 
         return await effects[effect](text)
 
-    async def wave_effect(self, text: str) -> str:
+    async def _wave(self, text: str) -> str:
         """Эффект волны"""
-        wave_chars = ['~', '≋', '≈', '∿']
-        result = []
-        for i, char in enumerate(text):
-            wave = choice(wave_chars)
-            result.append(f"{wave}{char}{wave}")
-        return " ".join(result)
+        wave_chars = ['~', '≋', '≈']
+        return " ".join([f"{choice(wave_chars)}{char}{choice(wave_chars)}" for char in text])
 
-    async def rainbow_effect(self, text: str) -> str:
+    async def _rainbow(self, text: str) -> str:
         """Радужный эффект"""
-        colors = [
-            'red', 'orange', 'yellow', 
-            'green', 'blue', 'purple'
-        ]
-        result = []
+        colors = ['red', 'orange', 'yellow', 'green', 'blue', 'purple']
+        colored = []
         for i, char in enumerate(text):
             color = colors[i % len(colors)]
-            result.append(f"<span color='{color}'>{char}</span>")
-        return "".join(result)
+            colored.append(f"<span color='{color}'>{char}</span>")
+        return "".join(colored)
 
-    async def typing_effect(self, text: str) -> str:
-        """Эффект печатания"""
+    async def _typing(self, text: str) -> str:
+        """Эффект печати"""
         result = []
         for i in range(1, len(text)+1):
             part = text[:i]
-            remaining = "_" * (len(text) - i)
-            result.append(f"<code>{part}{remaining}</code>")
-            if len(result) > 10:  # Ограничиваем количество шагов
-                result.pop(0)
-        return result[-1]
+            result.append(f"<code>{part}</code>")
+        return result[-1]  # Возвращаем финальный вариант
 
-    async def matrix_effect(self, text: str) -> str:
+    async def _matrix(self, text: str) -> str:
         """Матричный эффект"""
-        matrix_chars = "░▒▓█║╗╝╔╚"
-        result = []
-        for char in text:
-            if char == " ":
-                result.append(" ")
-                continue
-            matrix_char = choice(matrix_chars)
-            result.append(f"<span color='#00FF00'>{matrix_char}</span>")
-        return "".join(result)
+        chars = "░▒▓█║"
+        return "".join([f"<span color='#00FF00'>{choice(chars)}</span>" if char != " " else " " for char in text])
 
-    async def shake_effect(self, text: str) -> str:
+    async def _shake(self, text: str) -> str:
         """Дрожащий текст"""
         directions = ["→", "←", "↑", "↓"]
-        return "".join([
-            f"{choice(directions)}{char}{choice(directions)}" 
-            for char in text
-        ])
-
-    async def rotate_effect(self, text: str) -> str:
-        """Вращающийся текст"""
-        rotated = []
-        for char in text:
-            rotated.append(f"<b>{char}</b>")
-        return " ".join(rotated)
-
-    async def expand_effect(self, text: str) -> str:
-        """Расширяющийся текст"""
-        sizes = ["small", "medium", "large"]
-        return "".join([
-            f"<span size='{choice(sizes)}'>{char}</span>" 
-            for char in text
-        ])
-
-    async def invert_effect(self, text: str) -> str:
-        """Инвертированный текст"""
-        return text[::-1]
-
-    async def random_effect(self, text: str) -> str:
-        """Случайный эффект"""
-        effects = [
-            self.wave_effect,
-            self.rainbow_effect,
-            self.matrix_effect,
-            self.shake_effect
-        ]
-        return await choice(effects)(text)
-
-    async def emoji_effect(self, text: str) -> str:
-        """Эмодзи-спам"""
-        emojis = ["✨", "⚡", "🎯", "🔥", "💫", "🌟", "🌀"]
-        return " ".join([
-            f"{char}{choice(emojis)}" 
-            for char in text
-        ])
+        return "".join([f"{choice(directions)}{char}{choice(directions)}" for char in text])
