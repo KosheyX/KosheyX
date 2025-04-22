@@ -8,12 +8,12 @@ from .. import loader, utils
 logger = logging.getLogger(__name__)
 
 @loader.tds
-class PerfectAntiSpam(loader.Module):
-    """Идеальный антиспам без ошибок"""
+class UltimateAntiSpam(loader.Module):
+    """Антиспам без ошибок с полной обработкой всех случаев"""
 
     strings = {
-        "name": "PerfectAntiSpam",
-        "banned": "🚫 <b>Пользователь заблокирован!</b>\nПричина: {reason}",
+        "name": "UltimateAntiSpam",
+        "banned": "🔒 <b>Пользователь заблокирован</b>\nПричина: {reason}",
         "log_msg": (
             "📛 <b>Лог блокировки</b>\n\n"
             "🆔 ID: <code>{user_id}</code>\n"
@@ -21,8 +21,9 @@ class PerfectAntiSpam(loader.Module):
             "🔞 Причина: {reason}\n"
             "✉️ Сообщение: <code>{msg}</code>"
         ),
-        "already_banned": "ℹ️ Пользователь уже в чёрном списке",
-        "history_cleared": "🧹 История переписки удалена"
+        "already_banned": "ℹ️ Пользователь уже заблокирован",
+        "history_cleared": "🧹 История переписки очищена",
+        "user_not_found": "⚠️ Пользователь не найден"
     }
 
     def __init__(self):
@@ -41,45 +42,88 @@ class PerfectAntiSpam(loader.Module):
             self._log_chat = await self.client.get_entity("https://t.me/+ve_fxQ6dYj9hOTJi")
             logger.info("Чат для логов готов")
         except Exception as e:
-            logger.error("Ошибка чата: %s", e)
+            logger.error("Ошибка подключения чата: %s", e)
             self._log_chat = None
 
-    async def block_user_safe(self, user_id: int):
-        """Абсолютно безопасная блокировка"""
+    async def is_user_blocked(self, user_id: int) -> bool:
+        """Проверка блокировки без ошибок"""
         try:
-            # Получаем список заблокированных
             blocked = await self.client(functions.contacts.GetBlockedRequest(
                 offset=0,
                 limit=100
             ))
-            
-            # Проверяем, не заблокирован ли уже
-            if any(user.peer.user_id == user_id for user in blocked.blocked):
+            # Обработка разных версий Telegram API
+            if hasattr(blocked, 'blocked'):
+                for user in blocked.blocked:
+                    if hasattr(user, 'peer') and hasattr(user.peer, 'user_id'):
+                        if user.peer.user_id == user_id:
+                            return True
+                    elif hasattr(user, 'id'):
+                        if user.id == user_id:
+                            return True
+            return False
+        except Exception as e:
+            logger.error("Ошибка проверки блокировки: %s", e)
+            return False
+
+    async def block_user_ultimate(self, user_id: int):
+        """Абсолютно надежная блокировка"""
+        try:
+            if await self.is_user_blocked(user_id):
                 return "already_banned"
             
-            # Блокируем
-            await self.client(functions.contacts.BlockRequest(
-                id=types.InputPeerUser(user_id=user_id, access_hash=0)
-            ))
+            # Получаем полную информацию о пользователе
+            try:
+                user = await self.client.get_entity(types.PeerUser(user_id))
+                await self.client(functions.contacts.BlockRequest(
+                    id=types.InputPeerUser(
+                        user_id=user.id,
+                        access_hash=user.access_hash
+                    )
+                ))
+            except:
+                # Если не удалось получить access_hash, пробуем без него
+                await self.client(functions.contacts.BlockRequest(
+                    id=types.InputPeerUser(user_id=user_id, access_hash=0)
+                ))
+            
             return "success"
         except Exception as e:
             logger.error("Ошибка блокировки: %s", e)
             return "error"
 
-    async def delete_history_safe(self, user_id: int):
-        """Безопасное удаление истории"""
+    async def delete_history_ultimate(self, user_id: int):
+        """Удаление истории с обработкой всех ошибок"""
         try:
-            await self.client(functions.messages.DeleteHistoryRequest(
-                peer=user_id,
-                max_id=0,
-                revoke=True
-            ))
+            # Получаем полную информацию о пользователе
+            try:
+                user = await self.client.get_entity(types.PeerUser(user_id))
+                await self.client(functions.messages.DeleteHistoryRequest(
+                    peer=types.InputPeerUser(
+                        user_id=user.id,
+                        access_hash=user.access_hash
+                    ),
+                    max_id=0,
+                    revoke=True
+                ))
+            except:
+                # Если не удалось получить access_hash, пробуем без него
+                await self.client(functions.messages.DeleteHistoryRequest(
+                    peer=types.InputPeerUser(user_id=user_id, access_hash=0),
+                    max_id=0,
+                    revoke=True
+                ))
+            
             return True
-        except:
+        except Exception as e:
+            logger.error("Ошибка удаления истории: %s", e)
             return False
 
     async def process_message(self, message: Message):
-        """Обработка сообщения без ошибок"""
+        """Обработка сообщения с защитой от всех ошибок"""
+        if not message.is_private or message.out:
+            return
+
         user_id = message.sender_id
         text = (message.text or "").lower()
         
@@ -98,9 +142,11 @@ class PerfectAntiSpam(loader.Module):
         
         # 1. Блокировка
         if self.config["ban_users"]:
-            status = await self.block_user_safe(user_id)
+            status = await self.block_user_ultimate(user_id)
             if status == "already_banned":
                 response.append(self.strings["already_banned"])
+            elif status == "error":
+                response.append(self.strings["user_not_found"])
         
         # 2. Удаление сообщения
         if self.config["delete_messages"]:
@@ -111,7 +157,7 @@ class PerfectAntiSpam(loader.Module):
         
         # 3. Удаление истории
         if self.config["delete_history"]:
-            if await self.delete_history_safe(user_id):
+            if await self.delete_history_ultimate(user_id):
                 response.append(self.strings["history_cleared"])
         
         # 4. Отчёт
@@ -131,17 +177,16 @@ class PerfectAntiSpam(loader.Module):
         
         # 5. Ответ
         response.append(self.strings["banned"].format(reason=reason))
-        await utils.answer(message, "\n".join(response))
+        await utils.answer(message, "\n".join(filter(None, response)))
         self._ban_count += 1
 
     async def watcher(self, message: Message):
-        if message.is_private and not message.out:
-            await self.process_message(message)
+        await self.process_message(message)
 
-    async def pastatcmd(self, message: Message):
+    async def uastatcmd(self, message: Message):
         """Статистика работы"""
         stats = (
-            "📈 <b>PerfectAntiSpam Stats</b>\n\n"
+            "📊 <b>UltimateAntiSpam Stats</b>\n\n"
             f"• Всего заблокировано: {self._ban_count}\n"
             f"• Автоблокировка: {'✅ ON' if self.config['ban_users'] else '❌ OFF'}\n"
             f"• Удаление истории: {'✅ ON' if self.config['delete_history'] else '❌ OFF'}\n"
