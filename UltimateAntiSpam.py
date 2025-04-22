@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 @loader.tds
 class UltimateAntiSpamMod(loader.Module):
-    """🔒 Ultimate защита от спама в ЛС с отчетами в указанный чат"""
+    """🔒 Ultimate защита от спама в ЛС с отчетами в чат"""
 
     strings = {
         "name": "UltimateAntiSpam",
@@ -28,19 +28,18 @@ class UltimateAntiSpamMod(loader.Module):
             "🆔 <b>ID:</b> <code>{user_id}</code>\n"
             "📅 <b>Дата:</b> {date}\n"
             "🔍 <b>Причина:</b> {reason}\n"
-            "✉️ <b>Сообщение:</b> <code>{message_preview}</code>\n"
-            "🔗 <b>Чат:</b> <a href='tg://user?id={user_id}'>Перейти</a>"
+            "✉️ <b>Сообщение:</b> <code>{message_preview}</code>"
         ),
-        "log_chat_error": "❌ Ошибка доступа к чату для логов",
+        "log_chat_error": "❌ Не удалось отправить отчет в чат логов",
     }
 
     def __init__(self):
         self._ban_count = 0
         self._last_ban_time = None
-        self._log_chat = None  # Будет установлен при инициализации
         self.config = loader.ModuleConfig(
             "ban_users", True, "Автоматически банить нарушителей",
             "delete_messages", True, "Удалять вредоносные сообщения",
+            "log_to_channel", True, "Отправлять отчеты в чат",
             "antiporn", True, "Блокировать порнографию",
             "antispam", True, "Блокировать рекламу",
             "antilinks", True, "Блокировать вредоносные ссылки",
@@ -53,12 +52,12 @@ class UltimateAntiSpamMod(loader.Module):
         self.db = db
         self._flood_control = {}
         
-        # Инициализация чата для логов
+        # Получаем ID чата для логов один раз при запуске
         try:
-            self._log_chat = await client.get_entity("https://t.me/+ve_fxQ6dYj9hOTJi")
-            logger.info(f"Чат для логов установлен: {self._log_chat.title}")
+            self._log_chat = await self.client.get_entity("https://t.me/+ve_fxQ6dYj9hOTJi")
+            logger.info(f"Чат для логов установлен: {self._log_chat.title} (ID: {self._log_chat.id})")
         except Exception as e:
-            logger.error(f"Ошибка получения чата для логов: {e}")
+            logger.error(f"Ошибка получения чата логов: {e}")
             self._log_chat = None
 
     async def is_dm(self, message: Message) -> bool:
@@ -71,20 +70,35 @@ class UltimateAntiSpamMod(loader.Module):
 
         # 🔞 Порнография
         if self.config["antiporn"]:
-            if re.search(r"порно|porn|xxx|onlyfans|секс|сиськи|голые|nude|🔞|🍑|💋|🍒", text):
-                return "Порнография"
+            porn_triggers = [
+                r"порно|porn|xxx|onlyfans|секс|сиськи|голые|nude|🔞|🍑|💋|🍒",
+                r"секс|порно|обнаж|голая|порн|интим|fuck|dick|pussy",
+            ]
+            for trigger in porn_triggers:
+                if re.search(trigger, text, re.IGNORECASE):
+                    return "Порнография"
 
         # 📢 Реклама
         if self.config["antispam"]:
-            if re.search(r"подпишись|подписаться|канал|группа|чат|купить|продам|бесплатно|реклама", text):
-                return "Реклама"
+            spam_triggers = [
+                r"подпишись|подписаться|канал|группа|чат|купить|продам|бесплатно",
+                r"реклама|@[a-z0-9_]{5,}|t\.me/|telegram\.me/|оплата|заказать",
+            ]
+            for trigger in spam_triggers:
+                if re.search(trigger, text, re.IGNORECASE):
+                    return "Реклама"
 
         # ⚠️ Вредоносные ссылки
         if self.config["antilinks"]:
+            malicious_domains = [
+                r"bit\.ly|tinyurl\.com|shorte\.st|скачать\-бесплатно",
+                r"steamcommunity\.com/login|discord\.gift|free-minecraft\.ru",
+            ]
             urls = await self.extract_urls(message)
             for url in urls:
-                if re.search(r"bit\.ly|tinyurl\.com|shorte\.st|скачать\-бесплатно", url):
-                    return "Вредоносная ссылка"
+                for domain in malicious_domains:
+                    if re.search(domain, url, re.IGNORECASE):
+                        return "Вредоносная ссылка"
 
         # 📁 Опасные файлы
         if self.config["antifiles"] and message.file:
@@ -137,10 +151,10 @@ class UltimateAntiSpamMod(loader.Module):
                 await message.delete()
 
             # Отчет в чат логов
-            if self._log_chat:
+            if self.config["log_to_channel"] and self._log_chat:
                 try:
                     await self.client.send_message(
-                        entity=self._log_chat,
+                        entity=self._log_chat.id if hasattr(self._log_chat, 'id') else self._log_chat,
                         message=self.strings("report_msg").format(
                             user=utils.escape_html(user.first_name),
                             user_id=user.id,
@@ -148,7 +162,7 @@ class UltimateAntiSpamMod(loader.Module):
                             reason=reason,
                             message_preview=utils.escape_html((message.text or "")[:100]),
                         ),
-                        link_preview=False
+                        silent=True
                     )
                 except Exception as e:
                     logger.error(f"Ошибка отправки отчета: {e}")
@@ -180,6 +194,6 @@ class UltimateAntiSpamMod(loader.Module):
             f"📊 <b>Статистика блокировок</b>\n\n"
             f"🔢 <b>Всего забанено:</b> <code>{self._ban_count}</code>\n"
             f"⏰ <b>Последний бан:</b> <code>{self._last_ban_time or 'Нет данных'}</code>\n"
-            f"📝 <b>Чат логов:</b> {'✅ Настроен' if self._log_chat else '❌ Не доступен'}"
+            f"📝 <b>Чат логов:</b> {'✅ Настроен' if hasattr(self, '_log_chat') and self._log_chat else '❌ Не доступен'}"
         )
         await utils.answer(message, stats)
