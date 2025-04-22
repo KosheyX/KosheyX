@@ -8,21 +8,21 @@ from .. import loader, utils
 logger = logging.getLogger(__name__)
 
 @loader.tds
-class UltimateAntiSpamFixed(loader.Module):
-    """Исправленный антиспам модуль для ЛС"""
+class UltimateAntiSpamFinal(loader.Module):
+    """Финальная версия антиспама для ЛС"""
 
     strings = {
-        "name": "UltimateAntiSpamFixed",
+        "name": "UltimateAntiSpamFinal",
         "banned": "🚨 <b>Вы были заблокированы!</b>\nПричина: {reason}",
         "log_msg": (
-            "🛡 <b>Лог блокировки в ЛС</b>\n\n"
+            "🛡 <b>Лог блокировки</b>\n\n"
             "👤 Пользователь: {user}\n"
             "🆔 ID: <code>{user_id}</code>\n"
             "⏰ Время: {time}\n"
             "🔞 Причина: {reason}\n"
             "📝 Сообщение: <code>{msg}</code>"
         ),
-        "chat_error": "❌ Не удалось отправить лог в чат",
+        "chat_error": "❌ Не удалось отправить лог",
         "setup_error": "⚠️ Чат для логов не настроен"
     }
 
@@ -60,15 +60,12 @@ class UltimateAntiSpamFixed(loader.Module):
         user = await message.get_sender()
         
         try:
-            # Блокировка пользователя
             if self.config["ban_users"]:
                 await self.client(functions.contacts.BlockRequest(id=user.id))
             
-            # Удаление сообщения
             if self.config["delete_messages"]:
                 await message.delete()
             
-            # Отправка лога
             if self._log_chat:
                 try:
                     await self.client.send_message(
@@ -80,6 +77,7 @@ class UltimateAntiSpamFixed(loader.Module):
                             reason=reason,
                             msg=utils.escape_html((message.text or "")[:200])
                         )
+                    )
                 except Exception as e:
                     logger.error(f"Ошибка отправки лога: {e}")
                     await utils.answer(message, self.strings("chat_error"))
@@ -102,7 +100,7 @@ class UltimateAntiSpamFixed(loader.Module):
     async def uafstatcmd(self, message: Message):
         """Показать статус модуля"""
         status = (
-            "🔧 <b>UltimateAntiSpamFixed Status</b>\n\n"
+            "🔧 <b>UltimateAntiSpamFinal Status</b>\n\n"
             f"• Чат логов: {'✅ ' + self._log_chat.title if self._log_chat else '❌ Не подключен'}\n"
             f"• Всего забанено: {self._ban_count}\n"
             f"• Автобан: {'✅ Вкл' if self.config['ban_users'] else '❌ Выкл'}\n"
