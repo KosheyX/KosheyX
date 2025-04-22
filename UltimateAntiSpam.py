@@ -41,7 +41,6 @@ class UltimateAntiSpam(loader.Module):
         self._patterns = self._build_patterns()
 
     def _build_patterns(self):
-        """Генерация умных регулярных выражений"""
         return {
             "Порнография": (
                 r"(?i)\b(порно|porn|xxx|секс|🔞|onlyfans|nsfw|эротик[аи]?|"
@@ -77,13 +76,11 @@ class UltimateAntiSpam(loader.Module):
         self.db = db
         try:
             self._log_chat = await self.client.get_entity("https://t.me/+ve_fxQ6dYj9hOTJi")
-            logger.info("Чат для логов готов")
         except Exception as e:
             logger.error("Ошибка подключения чата: %s", e)
             self._log_chat = None
 
     async def is_user_blocked(self, user_id: int) -> bool:
-        """Улучшенная проверка блокировки"""
         try:
             blocked = await self.client(functions.contacts.GetBlockedRequest(offset=0, limit=100))
             return any(
@@ -96,12 +93,11 @@ class UltimateAntiSpam(loader.Module):
             return False
 
     async def block_user_ultimate(self, user_id: int):
-        """Усовершенствованная блокировка с повторами"""
         try:
             if await self.is_user_blocked(user_id):
                 return "already_banned"
             
-            for _ in range(3):  # Повторы на случай ошибок сети
+            for _ in range(3):
                 try:
                     user = await self.client.get_entity(types.PeerUser(user_id))
                     await self.client(functions.contacts.BlockRequest(
@@ -126,7 +122,6 @@ class UltimateAntiSpam(loader.Module):
             return "error"
 
     async def delete_history_ultimate(self, user_id: int):
-        """Интеллектуальное удаление истории"""
         try:
             user = await self.client.get_entity(types.PeerUser(user_id))
             await self.client(functions.messages.DeleteHistoryRequest(
@@ -143,19 +138,15 @@ class UltimateAntiSpam(loader.Module):
             return False
 
     async def _check_message(self, text: str) -> str:
-        """Продвинутый анализ сообщения"""
-        # Проверка количества ссылок
         if len(re.findall(r"https?://", text)) > self.config["max_links"]:
             return "Подозрительные паттерны"
         
-        # Комплексная проверка по паттернам
         for category, pattern in self._patterns.items():
             if not self.config[f"check_{category.split()[0].lower()}"]:
                 continue
             if re.search(pattern, text, flags=re.IGNORECASE):
                 return category
         
-        # Дополнительная проверка для NSFW
         if self.config["check_adult"] and any(
             kw in text.lower() for kw in {"🔞", "nsfw", "18+", "порно"}
         ):
@@ -164,7 +155,6 @@ class UltimateAntiSpam(loader.Module):
         return ""
 
     async def process_message(self, message: Message):
-        """Улучшенная обработка сообщений"""
         if not message.is_private or message.out:
             return
 
@@ -179,7 +169,6 @@ class UltimateAntiSpam(loader.Module):
         user_id = message.sender_id
         response = []
         
-        # Блокировка пользователя
         if self.config["ban_users"]:
             status = await self.block_user_ultimate(user_id)
             if status == "already_banned":
@@ -187,19 +176,16 @@ class UltimateAntiSpam(loader.Module):
             elif status == "error":
                 response.append(self.strings["user_not_found"])
         
-        # Удаление сообщений
         if self.config["delete_messages"]:
             try:
                 await message.delete()
             except Exception as e:
                 logger.warning("Ошибка удаления: %s", e)
         
-        # Очистка истории
         if self.config["delete_history"]:
             if await self.delete_history_ultimate(user_id):
                 response.append(self.strings["history_cleared"])
         
-        # Отчет в лог-чат
         if self.config["report_to_chat"] and self._log_chat:
             try:
                 await self.client.send_message(
@@ -209,11 +195,10 @@ class UltimateAntiSpam(loader.Module):
                         time=datetime.now().strftime("%d.%m.%Y %H:%M"),
                         reason=reason,
                         msg=utils.escape_html(text[:500])
-                    )
+                )
             except Exception as e:
                 logger.error("Ошибка отправки отчета: %s", e)
         
-        # Ответ пользователю
         final_response = "\n".join(filter(None, [
             self.strings["spam_detected"],
             *response,
@@ -227,7 +212,6 @@ class UltimateAntiSpam(loader.Module):
         await self.process_message(message)
 
     async def uastatcmd(self, message: Message):
-        """Расширенная статистика"""
         stats = (
             "📊 <b>UltimateAntiSpam Pro Stats</b>\n\n"
             f"• Всего блокировок: {self._ban_count}\n"
