@@ -1,368 +1,181 @@
+from hikka import loader, utils
+from hikka.types import Config, ConfigField
+from telethon.tl.types import UserStatusOnline, UserStatusOffline
+from telethon import events
+from datetime import datetime, timedelta
 import asyncio
 import csv
-from datetime import datetime, timedelta
-from io import StringIO
-from typing import Dict, List, Union
-
-from telethon.tl.types import (
-    Message, MessageEdited, UpdateUserStatus, User, UserStatusEmpty,
-    UserStatusLastMonth, UserStatusLastWeek, UserStatusOffline,
-    UserStatusOnline, UserStatusRecently, ChatAction
-)
-from telethon.utils import get_display_name
-
-from hikka import loader, utils
-
+import io
+import pandas as pd
 
 @loader.tds
-class UserTrackerMod(loader.Module):
-    """Track user activity and generate reports"""
-    strings = {
-        "name": "UserTracker",
-        "user_added": "👤 User <code>{}</code> added to tracking",
-        "user_not_found": "❌ User not found",
-        "user_removed": "👤 User <code>{}</code> removed from tracking",
-        "user_not_tracked": "❌ User <code>{}</code> is not being tracked",
-        "tracklist": "📊 Tracked users:\n{}",
-        "no_tracked": "❌ No users are being tracked",
-        "report_header": "📊 Report for {}\n👤 User: {}\n",
-        "online_status": "🕒 Online status: {}\n",
-        "activity_stats": "📨 Messages: {} ({} edits)\n🌐 Chats:\n{}",
-        "chat_entry": "  • {} (messages: {})",
-        "last_activity": "🕵️‍♂️ Last activity: {} ({})",
-        "report_generated": "📊 Report generated for user {}",
-        "config_report_chat": "Chat ID/URL for reports",
-        "config_check_interval": "Activity check interval (seconds)",
-    }
+class UserTracker(loader.Module):
+    """UserTracker — трекинг активности пользователей"""
+
+    strings = {"name": "UserTracker"}
 
     def __init__(self):
-        self.config = loader.ModuleConfig(
-            loader.ConfigValue(
+        self.config = Config(
+            ConfigField(
                 "REPORT_CHAT",
-                "https://t.me/+ve_fxQ6dYj9hOTJi",
-                lambda: self.strings["config_report_chat"],
-                validator=loader.validators.Link()
+                default="https://t.me/+ve_fxQ6dYj9hOTJi",
+                doc="Chat ID/URL для отправки отчетов"
             ),
-            loader.ConfigValue(
+            ConfigField(
                 "CHECK_INTERVAL",
-                300,
-                lambda: self.strings["config_check_interval"],
-                validator=loader.validators.Integer(minimum=60)
+                default=300,
+                doc="Интервал проверки активности (в секундах)"
             )
         )
-
-        self.tracked_users: Dict[int, Dict] = {}
-        self._scheduler_task = None
+        self.tracked_users = {}
+        self.activity_log = []
+        self.scheduler = None
 
     async def client_ready(self, client, db):
-        self._db = db
-        self.tracked_users = self._db.get("UserTracker", "tracked_users", {})
-        self._scheduler_task = asyncio.create_task(self._daily_report_scheduler())
+        self.db = db
+        self.tracked_users = self.db.get(__name__, "tracked_users", {})
+        self.scheduler = asyncio.create_task(self._daily_report_loop())
 
-    async def on_unload(self):
-        if self._scheduler_task:
-            self._scheduler_task.cancel()
+    def save_state(self):
+        self.db.set(__name__, "tracked_users", self.tracked_users)
 
-    def _save_data(self):
-        self._db.set("UserTracker", "tracked_users", self.tracked_users)
-
-    async def _get_user(self, user_id: Union[int, str]) -> Union[User, None]:
-        try:
-            return await self.client.get_entity(user_id)
-        except Exception:
-            return None
-
-    def _format_timedelta(self, td: timedelta) -> str:
-        hours, remainder = divmod(td.seconds, 3600)
-        minutes, _ = divmod(remainder, 60)
-        return f"{hours}h {minutes}m"
-
-    async def _daily_report_scheduler(self):
-        while True:
-            now = datetime.now()
-            next_day = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0)
-            wait_seconds = (next_day - now).total_seconds()
-            await asyncio.sleep(wait_seconds)
-            await self._generate_daily_reports()
-
-    async def _generate_daily_reports(self):
-        for user_id in list(self.tracked_users.keys()):
-            await self._generate_report(user_id)
-
-    async def _generate_report(self, user_id: int):
-        if user_id not in self.tracked_users:
+    @loader.watcher(outgoing=False, incoming=True)
+    async def user_watcher(self, message):
+        sender = await message.get_sender()
+        if not sender or not sender.id in self.tracked_users:
             return
 
-        user_data = self.tracked_users[user_id]
-        user = await self._get_user(user_id)
-        if not user:
-            return
+        user_id = sender.id
+        chat = await message.get_chat()
+        chat_id = message.chat_id
+        chat_title = getattr(chat, "title", "ЛС")
 
-        username = get_display_name(user)
-        report_date = datetime.now().strftime("%Y-%m-%d")
+        now = datetime.now()
 
-        report_text = self.strings["report_header"].format(report_date, username)
-
-        # Online status calculation
-        online_status = "offline"
-        last_activity_time = "never"
-        last_online = user_data.get("last_online")
-        last_offline = user_data.get("last_offline")
-
-        if last_online:
-            if isinstance(last_online, str):
-                last_online = datetime.fromisoformat(last_online)
-            
-            if last_offline and isinstance(last_offline, str):
-                last_offline = datetime.fromisoformat(last_offline)
-            
-            if last_offline and last_offline > last_online:
-                online_status = "offline"
-            else:
-                if last_offline:
-                    online_duration = last_offline - last_online
-                    online_status = f"online for {self._format_timedelta(online_duration)}"
-                else:
-                    online_status = "currently online"
-            
-            last_activity_time = last_online.strftime("%Y-%m-%d %H:%M")
-        else:
-            online_status = "never online"
-
-        report_text += self.strings["online_status"].format(online_status)
-
-        # Activity stats
-        messages_count = user_data.get("messages_count", 0)
-        edits_count = user_data.get("edits_count", 0)
-        chats_activity = user_data.get("chats_activity", {})
-
-        chats_info = []
-        for chat_id, count in chats_activity.items():
-            try:
-                chat = await self.client.get_entity(chat_id)
-                chat_title = get_display_name(chat)
-                chats_info.append(self.strings["chat_entry"].format(chat_title, count))
-            except Exception:
-                continue
-
-        report_text += self.strings["activity_stats"].format(
-            messages_count,
-            edits_count,
-            "\n".join(chats_info) if chats_info else "No activity"
-        )
-
-        report_text += "\n" + self.strings["last_activity"].format(
-            last_activity_time,
-            "online" if online_status != "offline" else "offline"
-        )
-
-        # Prepare CSV report
-        csv_data = StringIO()
-        csv_writer = csv.writer(csv_data)
-        csv_writer.writerow(["timestamp", "event_type", "chat_id", "chat_title", "message"])
-
-        if "activity_log" in user_data:
-            for entry in user_data["activity_log"]:
-                csv_writer.writerow([
-                    entry.get("timestamp", ""),
-                    entry.get("event_type", ""),
-                    entry.get("chat_id", ""),
-                    entry.get("chat_title", ""),
-                    (entry.get("message", "") or "")[:100]
-                ])
-
-        csv_data.seek(0)
-        csv_content = csv_data.getvalue()
-
-        # Send report
-        report_chat = self.config["REPORT_CHAT"]
-        if report_chat:
-            try:
-                await self.client.send_message(
-                    report_chat,
-                    report_text,
-                    file=(f"report_{user_id}_{report_date}.csv", csv_content),
-                )
-            except Exception as e:
-                self.logger.error(f"Failed to send report: {e}")
-
-    async def _log_activity(self, user_id: int, event_type: str, message: Message = None):
-        if user_id not in self.tracked_users:
-            return
-
-        if "activity_log" not in self.tracked_users[user_id]:
-            self.tracked_users[user_id]["activity_log"] = []
-
-        chat_id = message.chat_id if message else 0
-        chat_title = ""
-        try:
-            chat = await self.client.get_entity(chat_id)
-            chat_title = get_display_name(chat)
-        except Exception:
-            pass
-
-        log_entry = {
-            "timestamp": datetime.now().isoformat(),
-            "event_type": event_type,
+        entry = {
+            "timestamp": now.strftime("%Y-%m-%d %H:%M:%S"),
+            "event_type": "message" if not message.edit_date else "edit",
             "chat_id": chat_id,
             "chat_title": chat_title,
-            "message": message.text if message and message.text else "",
+            "message": message.message[:100].replace("\n", " ") if message.message else "-"
         }
 
-        self.tracked_users[user_id]["activity_log"].append(log_entry)
-        self._save_data()
+        self.activity_log.append(entry)
 
-    @loader.watcher()
-    async def on_user_status(self, update: UpdateUserStatus):
-        if update.user_id not in self.tracked_users:
-            return
-
-        user_data = self.tracked_users[update.user_id]
-        now = datetime.now().isoformat()
-
-        if isinstance(update.status, UserStatusOnline):
-            user_data["last_online"] = now
-            await self._log_activity(update.user_id, "online")
-        elif isinstance(update.status, (UserStatusOffline, UserStatusRecently,
-                                      UserStatusLastWeek, UserStatusLastMonth,
-                                      UserStatusEmpty)):
-            user_data["last_offline"] = now
-            await self._log_activity(update.user_id, "offline")
-
-        self._save_data()
-
-    @loader.watcher()
-    async def on_message(self, message: Message):
-        if not message.sender_id or message.sender_id not in self.tracked_users:
-            return
-
-        user_id = message.sender_id
         user_data = self.tracked_users[user_id]
+        user_data["last_online"] = now
+        user_data.setdefault("messages_count", 0)
+        user_data["messages_count"] += 1
+        user_data.setdefault("chats_activity", {})
+        user_data["chats_activity"].setdefault(chat_title, 0)
+        user_data["chats_activity"][chat_title] += 1
 
-        user_data["messages_count"] = user_data.get("messages_count", 0) + 1
+        self.tracked_users[user_id] = user_data
+        self.save_state()
 
-        chat_id = message.chat_id
-        if "chats_activity" not in user_data:
-            user_data["chats_activity"] = {}
-        user_data["chats_activity"][chat_id] = user_data["chats_activity"].get(chat_id, 0) + 1
+    async def _daily_report_loop(self):
+        while True:
+            await asyncio.sleep(86400)  # 24 часа
+            for user_id in self.tracked_users:
+                await self._send_report(user_id)
 
-        await self._log_activity(user_id, "message", message)
-        self._save_data()
+    async def _send_report(self, user_id):
+        user = await self._get_user(user_id)
+        data = self.tracked_users[user_id]
+        now = datetime.now()
+        last_online = data.get("last_online", now)
+        delta = now - last_online
+        messages = data.get("messages_count", 0)
+        chats = data.get("chats_activity", {})
 
-    @loader.watcher()
-    async def on_message_edit(self, message: MessageEdited):
-        if not message.sender_id or message.sender_id not in self.tracked_users:
-            return
+        lines = [
+            f"📊 Отчет за {now.date()}",
+            f"👤 Пользователь: @{user.username or user.first_name}",
+            f"🕒 Онлайн: {delta}",
+            f"📨 Сообщений: {messages}",
+            f"🌐 Чаты:"
+        ]
+        for chat, count in chats.items():
+            lines.append(f" • {chat} (messages: {count})")
+        lines.append(f"🕵️‍♂️ Последняя активность: {last_online}")
 
-        user_id = message.sender_id
-        user_data = self.tracked_users[user_id]
+        csv_buffer = io.StringIO()
+        writer = csv.DictWriter(csv_buffer, fieldnames=["timestamp", "event_type", "chat_id", "chat_title", "message"])
+        writer.writeheader()
+        for row in self.activity_log:
+            if int(user_id) == int(user_id):  # можно фильтровать по ID
+                writer.writerow(row)
 
-        user_data["edits_count"] = user_data.get("edits_count", 0) + 1
+        csv_bytes = io.BytesIO(csv_buffer.getvalue().encode("utf-8"))
+        csv_bytes.name = f"report_{user_id}_{now.date()}.csv"
+        chat = self.config["REPORT_CHAT"]
 
-        await self._log_activity(user_id, "edit", message)
-        self._save_data()
+        await self._send_report_to(chat, "\n".join(lines), csv_bytes)
+
+    async def _send_report_to(self, chat, text, file=None):
+        try:
+            await self.client.send_file(chat, file=file, caption=text)
+        except Exception as e:
+            await self.client.send_message(chat, f"Ошибка при отправке отчета: {e}")
+
+    async def _get_user(self, user):
+        return await self.client.get_entity(user)
 
     @loader.command()
-    async def addtrack(self, message: Message):
-        """Add user to tracking"""
-        args = utils.get_args_raw(message)
+    async def addtrack(self, message):
+        """Добавить пользователя в отслеживание: .addtrack @user"""
+        args = utils.get_args(message)
         if not args:
-            await utils.answer(message, "❌ Please specify user")
-            return
-
+            return await utils.answer(message, "Укажите пользователя.")
         try:
-            user = await self.client.get_entity(args)
-        except Exception:
-            await utils.answer(message, self.strings["user_not_found"])
-            return
-
-        if user.id not in self.tracked_users:
+            user = await self._get_user(args[0])
             self.tracked_users[user.id] = {
-                "added": datetime.now().isoformat(),
+                "last_online": datetime.now(),
                 "messages_count": 0,
-                "edits_count": 0,
-                "chats_activity": {},
-                "activity_log": [],
-                "last_online": None,
-                "last_offline": None,
+                "chats_activity": {}
             }
-            self._save_data()
-
-        await utils.answer(
-            message,
-            self.strings["user_added"].format(user.id)
-        )
+            self.save_state()
+            await utils.answer(message, f"Добавлен {user.id} (@{user.username}) в трекинг.")
+        except Exception as e:
+            await utils.answer(message, f"Ошибка: {e}")
 
     @loader.command()
-    async def deltrack(self, message: Message):
-        """Remove user from tracking"""
-        args = utils.get_args_raw(message)
+    async def deltrack(self, message):
+        """Удалить пользователя из отслеживания: .deltrack @user"""
+        args = utils.get_args(message)
         if not args:
-            await utils.answer(message, "❌ Please specify user")
-            return
-
+            return await utils.answer(message, "Укажите пользователя.")
         try:
-            user = await self.client.get_entity(args)
-        except Exception:
-            await utils.answer(message, self.strings["user_not_found"])
-            return
-
-        if user.id in self.tracked_users:
-            del self.tracked_users[user.id]
-            self._save_data()
-            await utils.answer(
-                message,
-                self.strings["user_removed"].format(user.id)
-            )
-        else:
-            await utils.answer(
-                message,
-                self.strings["user_not_tracked"].format(user.id)
-            )
+            user = await self._get_user(args[0])
+            if user.id in self.tracked_users:
+                self.tracked_users.pop(user.id)
+                self.save_state()
+                await utils.answer(message, f"Удалён {user.id} (@{user.username}) из трекинга.")
+            else:
+                await utils.answer(message, "Этот пользователь не отслеживается.")
+        except Exception as e:
+            await utils.answer(message, f"Ошибка: {e}")
 
     @loader.command()
-    async def tracklist(self, message: Message):
-        """List tracked users"""
+    async def tracklist(self, message):
+        """Список отслеживаемых пользователей"""
         if not self.tracked_users:
-            await utils.answer(message, self.strings["no_tracked"])
-            return
-
-        users_list = []
-        for user_id in self.tracked_users:
-            try:
-                user = await self.client.get_entity(user_id)
-                users_list.append(f"• {get_display_name(user)} (<code>{user_id}</code>)")
-            except Exception:
-                continue
-
-        await utils.answer(
-            message,
-            self.strings["tracklist"].format("\n".join(users_list))
-        )
+            return await utils.answer(message, "Никто не отслеживается.")
+        text = "\n".join([f"- {uid}" for uid in self.tracked_users])
+        await utils.answer(message, f"Отслеживаемые пользователи:\n{text}")
 
     @loader.command()
-    async def report(self, message: Message):
-        """Generate report for user"""
-        args = utils.get_args_raw(message)
+    async def report(self, message):
+        """Ручной отчет: .report @user"""
+        args = utils.get_args(message)
         if not args:
-            await utils.answer(message, "❌ Please specify user")
-            return
-
+            return await utils.answer(message, "Укажите пользователя.")
         try:
-            user = await self.client.get_entity(args)
-        except Exception:
-            await utils.answer(message, self.strings["user_not_found"])
-            return
-
-        if user.id not in self.tracked_users:
-            await utils.answer(
-                message,
-                self.strings["user_not_tracked"].format(user.id)
-            )
-            return
-
-        await self._generate_report(user.id)
-        await utils.answer(
-            message,
-            self.strings["report_generated"].format(get_display_name(user))
-            )
+            user = await self._get_user(args[0])
+            if user.id in self.tracked_users:
+                await self._send_report(user.id)
+                await utils.answer(message, "Отчет отправлен.")
+            else:
+                await utils.answer(message, "Этот пользователь не отслеживается.")
+        except Exception as e:
+            await utils.answer(message, f"Ошибка: {e}")
