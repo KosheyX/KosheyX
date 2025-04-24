@@ -292,22 +292,23 @@ class SelfLearningBotMod(loader.Module):
         }
         await utils.answer(message, self.strings["stats"].format(**stats))
 
-    @loader.command()
-    async def slbotmemory(self, message: Message):
-        """Показать, что бот запомнил"""
-        user_id = message.sender_id
-        if user_id not in self.dialog_context or not self.dialog_context[user_id]:
-            await utils.answer(message, self.strings["no_memory"])
-            return
-            
-        last_messages = "\n".join(
-            f"{i+1}. {msg['text']}" 
-            for i, msg in enumerate(self.dialog_context[user_id][-5:])
-            
-        await utils.answer(
-            message,
-            f"📝 <b>Последние сообщения в нашем диалоге:</b>\n\n{last_messages}"
-        )
+ @loader.command()
+async def slbotmemory(self, message: Message):
+    """Показать, что бот запомнил"""
+    user_id = message.sender_id
+    if user_id not in self.dialog_context or not self.dialog_context[user_id]:
+        await utils.answer(message, self.strings["no_memory"])
+        return
+        
+    last_messages = "\n".join(
+        f"{i+1}. {msg['text']}" 
+        for i, msg in enumerate(self.dialog_context[user_id][-5:])
+    )  # <- Закрывающая скобка была добавлена здесь
+    
+    await utils.answer(
+        message,
+        f"📝 <b>Последние сообщения в нашем диалоге:</b>\n\n{last_messages}"
+    )
 
     @loader.command()
     async def slbotstart(self, message: Message):
